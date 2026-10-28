@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tetris Game - Phase 1</title>
+  <title>Tetris Game - Phase 2</title>
   <style>
     :root {
       --bg-color: #0f111a;
@@ -35,7 +35,7 @@
       flex-direction: column;
       align-items: center;
       gap: 20px;
-      max-width: 800px;
+      max-width: 900px;
       width: 100%;
     }
 
@@ -87,7 +87,7 @@
     }
 
     .card h2 {
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       text-transform: uppercase;
       color: #8a94a6;
       margin-bottom: 8px;
@@ -95,16 +95,24 @@
     }
 
     .card .value {
-      font-size: 1.8rem;
+      font-size: 1.6rem;
       font-weight: bold;
       color: #ffffff;
       font-family: 'Courier New', Courier, monospace;
     }
 
+    canvas#next {
+      background-color: #050608;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      display: block;
+    }
+
     .controls-info {
-      font-size: 0.85rem;
+      font-size: 0.82rem;
       line-height: 1.6;
       color: #8a94a6;
+      width: 100%;
     }
 
     .controls-info span {
@@ -118,7 +126,7 @@
       left: 0;
       width: 100%;
       height: 100%;
-      background: rgba(15, 17, 26, 0.85);
+      background: rgba(15, 17, 26, 0.88);
       display: flex;
       flex-direction: column;
       justify-content: center;
@@ -171,8 +179,20 @@
       </div>
       <div class="sidebar">
         <div class="card">
+          <h2>Next</h2>
+          <canvas id="next" width="100" height="100"></canvas>
+        </div>
+        <div class="card">
+          <h2>High Score</h2>
+          <div id="highscore" class="value">0</div>
+        </div>
+        <div class="card">
           <h2>Score</h2>
           <div id="score" class="value">0</div>
+        </div>
+        <div class="card">
+          <h2>Level</h2>
+          <div id="level" class="value">1</div>
         </div>
         <div class="card">
           <h2>Lines</h2>
@@ -184,6 +204,7 @@
             <p><span>← / →</span> : 이동</p>
             <p><span>↓</span> : 소프트 드롭</p>
             <p><span>↑ / W</span> : 회전</p>
+            <p><span>Space</span> : 하드 드롭</p>
           </div>
         </div>
       </div>
@@ -197,7 +218,12 @@
 
     const canvas = document.getElementById('board');
     const ctx = canvas.getContext('2d');
+    const nextCanvas = document.getElementById('next');
+    const nextCtx = nextCanvas.getContext('2d');
+
     const scoreElement = document.getElementById('score');
+    const highscoreElement = document.getElementById('highscore');
+    const levelElement = document.getElementById('level');
     const linesElement = document.getElementById('lines');
     const gameOverOverlay = document.getElementById('game-over');
     const restartBtn = document.getElementById('restart-btn');
@@ -256,19 +282,22 @@
 
     let board = createBoard();
     let score = 0;
+    let highScore = parseInt(localStorage.getItem('tetris_highscore') || '0', 10);
     let lines = 0;
+    let level = 1;
     let gameOver = false;
     let dropCounter = 0;
     let dropInterval = 1000;
     let lastTime = 0;
 
     let piece = null;
+    let nextPiece = null;
 
     function createBoard() {
       return Array.from({ length: ROWS }, () => Array(COLS).fill(0));
     }
 
-    function createPiece() {
+    function getRandomPiece() {
       const typeId = Math.floor(Math.random() * 7) + 1;
       const shape = SHAPES[typeId];
       return {
@@ -279,10 +308,10 @@
       };
     }
 
-    function collide(board, piece, offset = { x: 0, y: 0 }) {
-      const shape = piece.shape;
-      const px = piece.x + offset.x;
-      const py = piece.y + offset.y;
+    function collide(board, p, offset = { x: 0, y: 0 }) {
+      const shape = p.shape;
+      const px = p.x + offset.x;
+      const py = p.y + offset.y;
 
       for (let y = 0; y < shape.length; y++) {
         for (let x = 0; x < shape[y].length; x++) {
@@ -302,14 +331,14 @@
       return false;
     }
 
-    function merge(board, piece) {
-      piece.shape.forEach((row, y) => {
+    function merge(board, p) {
+      p.shape.forEach((row, y) => {
         row.forEach((value, x) => {
           if (value !== 0) {
-            const boardY = piece.y + y;
-            const boardX = piece.x + x;
+            const boardY = p.y + y;
+            const boardX = p.x + x;
             if (boardY >= 0 && boardY < ROWS && boardX >= 0 && boardX < COLS) {
-              board[boardY][boardX] = piece.colorId;
+              board[boardY][boardX] = p.colorId;
             }
           }
         });
@@ -335,7 +364,7 @@
 
       piece.shape = rotated;
 
-      // Wall Kick 보정 시도 (0, -1, +1, -2, +2, y-1)
+      // Wall Kick 보정 시도 (0, -1, +1, -2, +2)
       const offsets = [0, -1, 1, -2, 2];
       let offsetApplied = false;
 
@@ -351,6 +380,11 @@
         piece.shape = originalShape;
         piece.x = originalX;
       }
+    }
+
+    function updateLevelAndSpeed() {
+      level = Math.floor(lines / 10) + 1;
+      dropInterval = Math.max(100, 1000 - (level - 1) * 85);
     }
 
     function clearLines() {
@@ -370,13 +404,20 @@
       if (linesCleared > 0) {
         lines += linesCleared;
         const lineScores = [0, 100, 300, 500, 800];
-        score += lineScores[linesCleared] || (linesCleared * 200);
+        score += (lineScores[linesCleared] || (linesCleared * 200)) * level;
+        updateLevelAndSpeed();
+        if (score > highScore) {
+          highScore = score;
+          localStorage.setItem('tetris_highscore', highScore.toString());
+        }
         updateScore();
       }
     }
 
     function updateScore() {
       scoreElement.textContent = score;
+      highscoreElement.textContent = highScore;
+      levelElement.textContent = level;
       linesElement.textContent = lines;
     }
 
@@ -392,40 +433,84 @@
       }
     }
 
+    function getGhostY() {
+      if (!piece) return 0;
+      let ghostY = piece.y;
+      while (!collide(board, piece, { x: 0, y: ghostY - piece.y + 1 })) {
+        ghostY++;
+      }
+      return ghostY;
+    }
+
+    function spawnNextPiece() {
+      piece = nextPiece ? nextPiece : getRandomPiece();
+      nextPiece = getRandomPiece();
+
+      if (collide(board, piece)) {
+        gameOver = true;
+        gameOverOverlay.classList.add('active');
+      }
+      drawNextPiece();
+    }
+
     function drop() {
       if (!collide(board, piece, { x: 0, y: 1 })) {
         piece.y++;
       } else {
         merge(board, piece);
         clearLines();
-        piece = createPiece();
-        if (collide(board, piece)) {
-          gameOver = true;
-          gameOverOverlay.classList.add('active');
-        }
+        spawnNextPiece();
       }
       dropCounter = 0;
     }
 
-    function drawBlock(x, y, colorId) {
+    function hardDrop() {
+      if (gameOver || !piece) return;
+      const ghostY = getGhostY();
+      const dropDistance = ghostY - piece.y;
+      score += dropDistance * 2;
+      piece.y = ghostY;
+      merge(board, piece);
+      if (score > highScore) {
+        highScore = score;
+        localStorage.setItem('tetris_highscore', highScore.toString());
+      }
+      clearLines();
+      spawnNextPiece();
+      dropCounter = 0;
+      updateScore();
+    }
+
+    function drawBlock(cCtx, x, y, colorId, isGhost = false) {
       const px = x * BLOCK_SIZE;
       const py = y * BLOCK_SIZE;
 
-      ctx.fillStyle = COLORS[colorId];
-      ctx.fillRect(px, py, BLOCK_SIZE, BLOCK_SIZE);
+      if (isGhost) {
+        cCtx.strokeStyle = COLORS[colorId];
+        cCtx.lineWidth = 2;
+        cCtx.strokeRect(px + 2, py + 2, BLOCK_SIZE - 4, BLOCK_SIZE - 4);
+        cCtx.fillStyle = COLORS[colorId];
+        cCtx.globalAlpha = 0.2;
+        cCtx.fillRect(px + 2, py + 2, BLOCK_SIZE - 4, BLOCK_SIZE - 4);
+        cCtx.globalAlpha = 1.0;
+        return;
+      }
 
-      // 입체감을 위한 내부 하이라이트 & 쉐도우
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)';
-      ctx.fillRect(px, py, BLOCK_SIZE, 3);
-      ctx.fillRect(px, py, 3, BLOCK_SIZE);
+      cCtx.fillStyle = COLORS[colorId];
+      cCtx.fillRect(px, py, BLOCK_SIZE, BLOCK_SIZE);
 
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-      ctx.fillRect(px, py + BLOCK_SIZE - 3, BLOCK_SIZE, 3);
-      ctx.fillRect(px + BLOCK_SIZE - 3, py, 3, BLOCK_SIZE);
+      // 입체 하이라이트 & 쉐도우
+      cCtx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+      cCtx.fillRect(px, py, BLOCK_SIZE, 3);
+      cCtx.fillRect(px, py, 3, BLOCK_SIZE);
 
-      ctx.strokeStyle = '#050608';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(px, py, BLOCK_SIZE, BLOCK_SIZE);
+      cCtx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+      cCtx.fillRect(px, py + BLOCK_SIZE - 3, BLOCK_SIZE, 3);
+      cCtx.fillRect(px + BLOCK_SIZE - 3, py, 3, BLOCK_SIZE);
+
+      cCtx.strokeStyle = '#050608';
+      cCtx.lineWidth = 1;
+      cCtx.strokeRect(px, py, BLOCK_SIZE, BLOCK_SIZE);
     }
 
     function drawGrid() {
@@ -447,27 +532,74 @@
       }
     }
 
+    function drawGhostPiece() {
+      if (!piece) return;
+      const ghostY = getGhostY();
+      piece.shape.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            drawBlock(ctx, piece.x + x, ghostY + y, piece.colorId, true);
+          }
+        });
+      });
+    }
+
+    function drawNextPiece() {
+      nextCtx.fillStyle = '#050608';
+      nextCtx.fillRect(0, 0, nextCanvas.width, nextCanvas.height);
+
+      if (!nextPiece) return;
+
+      const shape = nextPiece.shape;
+      const tileSize = 20;
+      const offsetX = (nextCanvas.width - shape[0].length * tileSize) / 2;
+      const offsetY = (nextCanvas.height - shape.length * tileSize) / 2;
+
+      shape.forEach((row, y) => {
+        row.forEach((value, x) => {
+          if (value !== 0) {
+            const px = offsetX + x * tileSize;
+            const py = offsetY + y * tileSize;
+
+            nextCtx.fillStyle = COLORS[nextPiece.colorId];
+            nextCtx.fillRect(px, py, tileSize, tileSize);
+
+            nextCtx.fillStyle = 'rgba(255, 255, 255, 0.25)';
+            nextCtx.fillRect(px, py, tileSize, 2);
+            nextCtx.fillRect(px, py, 2, tileSize);
+
+            nextCtx.strokeStyle = '#050608';
+            nextCtx.lineWidth = 1;
+            nextCtx.strokeRect(px, py, tileSize, tileSize);
+          }
+        });
+      });
+    }
+
     function draw() {
       ctx.fillStyle = '#050608';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
       drawGrid();
 
-      // 고정된 블록 렌더링
+      // 고정된 블록
       board.forEach((row, y) => {
         row.forEach((value, x) => {
           if (value !== 0) {
-            drawBlock(x, y, value);
+            drawBlock(ctx, x, y, value);
           }
         });
       });
 
-      // 현재 조종 중인 테트로미노 렌더링
+      // Ghost Piece
+      drawGhostPiece();
+
+      // 현재 블록
       if (piece) {
         piece.shape.forEach((row, y) => {
           row.forEach((value, x) => {
             if (value !== 0) {
-              drawBlock(piece.x + x, piece.y + y, piece.colorId);
+              drawBlock(ctx, piece.x + x, piece.y + y, piece.colorId);
             }
           });
         });
@@ -493,12 +625,18 @@
       board = createBoard();
       score = 0;
       lines = 0;
+      level = 1;
       gameOver = false;
       dropCounter = 0;
+      dropInterval = 1000;
       lastTime = performance.now();
+      highScore = parseInt(localStorage.getItem('tetris_highscore') || '0', 10);
       updateScore();
       gameOverOverlay.classList.remove('active');
-      piece = createPiece();
+
+      nextPiece = getRandomPiece();
+      spawnNextPiece();
+
       requestAnimationFrame(update);
     }
 
@@ -513,9 +651,15 @@
         draw();
       } else if (event.key === 'ArrowDown') {
         drop();
+        score += 1;
+        updateScore();
         draw();
       } else if (event.key === 'ArrowUp' || event.key === 'w' || event.key === 'W') {
         rotatePiece();
+        draw();
+      } else if (event.code === 'Space') {
+        event.preventDefault();
+        hardDrop();
         draw();
       }
     });

@@ -9,13 +9,12 @@ import urllib.error
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
-# 우선순위 폴백 모델 체인: Antigravity 전용 모델 -> 3.7 Flash -> 3.5 Flash -> 4 Argon -> 3.8 Flash
+# 검증된 고성능/경량 모델만 배치 (불필요한 400/429 유발 모델 제거)
 DEFAULT_FALLBACK_CHAIN = [
-    "antigravity-preview-latest",
-    "antigravity-preview-09-2026",
-    "gemini-3.7-flash",
     "gemini-3.5-flash",
-    "gemini-4-argon",
+    "gemini-3.5-flash-lite",
+    "gemini-2.5-flash",
+    "gemini-3.6-flash",
     "gemini-3.8-flash"
 ]
 
@@ -99,7 +98,7 @@ Strictly follow this execution loop:
 6. If `./sync_push.sh` exists, execute it via `run_shell` after marking a task complete.
 """
 
-# --- 2. Multi-Model Fallback API Caller ---
+# --- 2. Rate-Limit Safe Fallback Caller ---
 def call_gemini_with_fallback(contents):
     env_model = os.environ.get("GEMINI_MODEL", "").strip()
     model_chain = [env_model] + [m for m in DEFAULT_FALLBACK_CHAIN if m != env_model] if env_model else DEFAULT_FALLBACK_CHAIN
@@ -107,38 +106,43 @@ def call_gemini_with_fallback(contents):
     payload = {
         "contents": contents,
         "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
-        "tools": [{"functionDeclarations": TOOL_DECLARATIONS}],
-        "generationConfig": {"temperature": 0.1}
+        "tools": [{"functionDeclarations": TOOL_DECLARATIONS}]
     }
     data = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
 
-    for model_name in model_chain:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={API_KEY}"
-        try:
-            print(f"  [*] Calling model: {model_name} (timeout=25s)...")
-            req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                return json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="ignore")
-            print(f"  [!] {model_name} HTTP {e.code} 응답 지연/오류 -> 즉시 다음 예비 모델로 전환합니다.")
-        except Exception as e:
-            print(f"  [!] {model_name} 응답 타임아웃/예외 ({e}) -> 즉시 다음 예비 모델로 전환합니다.")
+    while True:
+        for model_name in model_chain:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={API_KEY}"
+            try:
+                print(f"  [*] Calling model: {model_name} (timeout=90s)...")
+                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    return json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as e:
+                err_body = e.read().decode("utf-8", errors="ignore")
+                if e.code == 429:
+                    print(f"  [!] {model_name} HTTP 429 (분당 호출 한도). 15초 쿨다운 대기 후 다음 모델 시도...")
+                    time.sleep(15)
+                else:
+                    print(f"  [!] {model_name} HTTP {e.code} 오류 -> 3초 후 다음 예비 모델로 전환합니다.")
+                    time.sleep(3)
+            except Exception as e:
+                print(f"  [!] {model_name} 타임아웃/예외 ({e}) -> 3초 후 다음 예비 모델로 전환합니다.")
+                time.sleep(3)
 
-    print("[-] 모든 폴백 모델 호출에 실패했습니다. 10초 후 재시도합니다.")
-    time.sleep(10)
-    return call_gemini_with_fallback(contents)
+        print("[-] 모든 모델이 일시적 한도 초과 상태입니다. 분당 쿼터 리셋을 위해 30초 대기합니다...")
+        time.sleep(30)
 
 # --- 3. ReAct Loop Runner ---
 def main():
-    max_steps = int(os.environ.get("ANTIGRAVITY_MAX_STEPS", "15"))
+    max_steps = int(os.environ.get("ANTIGRAVITY_MAX_STEPS", "20"))
     task_prompt = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else (
         "Check docs/PROGRESS.md and execute pending tasks autonomously using your tools."
     )
 
     print("=" * 68)
-    print(f"[Antigravity CLI] Multi-Model Engine | Workspace: {os.getcwd()}")
+    print(f"[Antigravity CLI] Rate-Limit Safe Engine | Workspace: {os.getcwd()}")
     print("=" * 68)
 
     contents = [{"role": "user", "parts": [{"text": task_prompt}]}]
@@ -180,6 +184,8 @@ def main():
 
         if tool_responses:
             contents.append({"role": "user", "parts": tool_responses})
+            # 스텝 간 분당 호출(RPM) 보호를 위한 3초 호흡
+            time.sleep(3)
         else:
             print("\n[+] Antigravity CLI 루프가 모든 작업을 마치고 정상 종료되었습니다.")
             break

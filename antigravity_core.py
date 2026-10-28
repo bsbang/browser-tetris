@@ -11,6 +11,7 @@ API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 # 검증된 고성능/경량 모델만 배치 (불필요한 400/429 유발 모델 제거)
 DEFAULT_FALLBACK_CHAIN = [
+    "gemini-3.5-flash-lite",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-2.5-flash",
